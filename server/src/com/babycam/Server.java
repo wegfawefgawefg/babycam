@@ -339,9 +339,10 @@ public final class Server {
                     + ",\"mono\":" + System.nanoTime() / 1000
                     + ",\"tsSource\":" + chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) + "}";
                 case "cam":
+                    // Keep the viewer's exposure and black-and-white choices across switches; only the
+                    // IR camera needs our auto exposure (its own does nothing).
                     Settings.cam = p[1];
-                    Settings.mono = p[1].equals("4");
-                    Settings.ae = p[1].equals("4") ? "auto" : "cam";
+                    if (p[1].equals("4") && Settings.ae.equals("cam")) Settings.ae = "auto";
                     Settings.gain = 1;
                     Settings.zoom = 1; Settings.panX = 0; Settings.panY = 0;
                     switchCamera(p[1]); return Settings.json();

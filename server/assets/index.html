@@ -270,7 +270,7 @@ function action(name) {
     case 'darker': return st.ae === 'auto' ? cmd('target ' + Math.max(0.08, (st.target || 0.4) - 0.06).toFixed(2))
                                            : cmd('ev ' + Math.max(-12, (st.ev || 0) - 2));
     case 'mono': return cmd('mono ' + (st.mono ? 0 : 1));
-    case 'night': return cmd('maxexp ' + ((st.maxExp || 125) > 130 ? 66 : 199));
+    case 'night': return cmd('maxexp ' + ((st.maxExp || 125) > 130 ? 66 : 250));
     default: return cmd(name);
   }
 }
