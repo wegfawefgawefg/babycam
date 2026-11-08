@@ -89,6 +89,15 @@ public final class Server {
         startControl();
         Http.start();
         Radio.keepAwake();
+        // A keyframe every second whatever the frame rate. The encoder counts frames
+        // assuming 15 fps, so at 4 fps (night) it would only make one every ~4 s; new
+        // viewers and the HLS segments both wait for keyframes.
+        new Thread(() -> {
+            while (true) {
+                try { Thread.sleep(1000); } catch (InterruptedException e) { return; }
+                requestKeyframe();
+            }
+        }, "keyframes").start();
         Health.start();
         Mic.start();
         openCamera();

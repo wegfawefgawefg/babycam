@@ -47,7 +47,8 @@ final class Http {
                     send(out, 200, "text/html; charset=utf-8", page());
                     break;
                 case "/info":
-                    send(out, 200, "application/json", ("{\"up\":" + (Live.init != null) + ",\"codec\":\"" + Live.codec()
+                    // CORS so the TV app's launcher page can check the camera is up before opening it.
+                    sendCors(out, 200, "application/json", ("{\"up\":" + (Live.init != null) + ",\"codec\":\"" + Live.codec()
                         + "\",\"width\":" + Live.width + ",\"height\":" + Live.height + ",\"viewers\":" + Live.viewers.size() + "}")
                         .getBytes(StandardCharsets.UTF_8));
                     break;
@@ -63,6 +64,13 @@ final class Http {
                     send(out, 200, "application/json", reply.getBytes(StandardCharsets.UTF_8));
                     break;
                 }
+                case "/live.m3u8":
+                    send(out, 200, "application/vnd.apple.mpegurl", Live.playlist().getBytes(StandardCharsets.UTF_8));
+                    break;
+                case "/init.mp4":
+                    if (Live.init == null) send(out, 503, "text/plain", "starting".getBytes());
+                    else send(out, 200, "video/mp4", Live.init);
+                    break;
                 case "/live.mp4":
                 case "/live":
                     if (Live.init == null) { send(out, 503, "text/plain", "starting".getBytes()); break; }
@@ -76,6 +84,11 @@ final class Http {
                     try { Live.serve(out, sock.getInetAddress().getHostAddress(), ua); } finally { Server.log("viewer left " + sock.getInetAddress().getHostAddress()); }
                     break;
                 default:
+                    if (path.startsWith("/seg/") && path.endsWith(".m4s")) {
+                        byte[] seg = null;
+                        try { seg = Live.segment(Integer.parseInt(path.substring(5, path.length() - 4))); } catch (NumberFormatException ignored) {}
+                        if (seg != null) { send(out, 200, "video/mp4", seg); break; }
+                    }
                     send(out, 404, "text/plain", "not found".getBytes());
             }
         } catch (Exception e) { /* client went away */ }
@@ -90,6 +103,13 @@ final class Http {
             if (state == 4) break;
         }
         return b.toString("UTF-8");
+    }
+
+    static void sendCors(OutputStream out, int code, String type, byte[] body) throws Exception {
+        out.write(("HTTP/1.0 " + code + " OK\r\nContent-Type: " + type + "\r\nContent-Length: " + body.length
+            + "\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n\r\n").getBytes());
+        out.write(body);
+        out.flush();
     }
 
     static void send(OutputStream out, int code, String type, byte[] body) throws Exception {

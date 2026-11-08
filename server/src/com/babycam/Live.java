@@ -57,6 +57,53 @@ final class Live {
 
     static final List<Viewer> viewers = new CopyOnWriteArrayList<>();
 
+    // HLS for browsers without Media Source Extensions (older iPhones): the same fragments,
+    // grouped into ~1 s segments that each start on a keyframe.
+    static final class Seg {
+        final int seq; final byte[] data; final double dur;
+        Seg(int seq, byte[] data, double dur) { this.seq = seq; this.data = data; this.dur = dur; }
+    }
+    static final java.util.ArrayDeque<Seg> segs = new java.util.ArrayDeque<>();
+    static java.io.ByteArrayOutputStream curSeg;
+    static long curSegStart = -1;
+    static int segSeq = 0;
+
+    static void hls(byte[] frag, boolean key, long t) {
+        if (key && curSeg != null && t - curSegStart >= Mp4.VIDEO_SCALE * 9 / 10) {
+            synchronized (segs) {
+                segs.addLast(new Seg(segSeq++, curSeg.toByteArray(), (t - curSegStart) / (double) Mp4.VIDEO_SCALE));
+                while (segs.size() > 8) segs.removeFirst();
+            }
+            curSeg = null;
+        }
+        if (curSeg == null) {
+            if (!key || t < 0) return;
+            curSeg = new java.io.ByteArrayOutputStream();
+            curSegStart = t;
+        }
+        curSeg.write(frag, 0, frag.length);
+    }
+
+    static String playlist() {
+        StringBuilder b = new StringBuilder("#EXTM3U\n#EXT-X-VERSION:7\n");
+        synchronized (segs) {
+            double max = 1;
+            for (Seg g : segs) max = Math.max(max, g.dur);
+            b.append("#EXT-X-TARGETDURATION:").append((int) Math.ceil(max)).append('\n');
+            b.append("#EXT-X-MEDIA-SEQUENCE:").append(segs.isEmpty() ? 0 : segs.peekFirst().seq).append('\n');
+            b.append("#EXT-X-MAP:URI=\"init.mp4\"\n");
+            for (Seg g : segs) b.append(String.format(java.util.Locale.ROOT, "#EXTINF:%.3f,\nseg/%d.m4s\n", g.dur, g.seq));
+        }
+        return b.toString();
+    }
+
+    static byte[] segment(int seq) {
+        synchronized (segs) {
+            for (Seg g : segs) if (g.seq == seq) return g.data;
+        }
+        return null;
+    }
+
     static long nowUs() { return System.nanoTime() / 1000 - T0; }
 
     static synchronized void setVideoConfig(byte[] s, byte[] p, int w, int h) {
@@ -97,7 +144,9 @@ final class Live {
         byte[] sample = lengthPrefixed(annexB, key);
         List<Mp4.Sample> audio = new ArrayList<>(pendingAudio);
         pendingAudio.clear();
-        broadcast(Mp4.fragment(seq++, new Mp4.Sample(sample, t, lastDuration, key[0]), audio), key[0]);
+        byte[] frag = Mp4.fragment(seq++, new Mp4.Sample(sample, t, lastDuration, key[0]), audio);
+        broadcast(frag, key[0]);
+        hls(frag, key[0], t);
     }
 
     // One AAC frame (1024 samples).
@@ -111,7 +160,9 @@ final class Live {
         if (pendingAudio.size() >= 12) {
             List<Mp4.Sample> audio = new ArrayList<>(pendingAudio);
             pendingAudio.clear();
-            broadcast(Mp4.fragment(seq++, null, audio), false);
+            byte[] frag = Mp4.fragment(seq++, null, audio);
+            broadcast(frag, false);
+            hls(frag, false, -1);
         }
     }
 

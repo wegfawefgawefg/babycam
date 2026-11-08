@@ -9,7 +9,11 @@
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.3 system-ui, sans-serif; }
   body { display: flex; flex-direction: column; }
-  #stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+  #stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000;
+           overflow: hidden; touch-action: none; }
+  #view { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+  #mstat { position: absolute; top: 28px; right: 28px; text-align: right; pointer-events: none; color: #c8c2b4; font-size: 15px; }
+  #mstat canvas { display: block; margin-top: 2px; background: rgba(0,0,0,.45); border-radius: 4px; }
   video { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; background: #000; }
   #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }
   #overlay span { background: rgba(0,0,0,.7); border: 1px solid var(--dim); padding: 14px 22px; border-radius: 10px; font-size: 20px; }
@@ -44,13 +48,26 @@
   button.on { background: var(--btn-on); color: var(--accent); border-color: #5a4a28; }
   #stat { width: 100%; text-align: center; color: var(--dim); font-size: 12px; }
   body.hide #bar { display: none; }
+  /* TV mode: remote control, big focusable buttons */
+  body.tv #bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px; background: rgba(10,10,10,.92); }
+  body.tv #bar button { font-size: 24px; padding: 14px 20px; }
+  body.tv #bar .lbl { font-size: 18px; }
+  body.tv #bar button:focus { outline: 4px solid var(--accent); outline-offset: 2px; background: #3a3220; color: var(--accent); }
+  body.tv #stat, body.tv #stat2 { font-size: 18px; }
+  #tvhint { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); color: var(--dim); font-size: 18px;
+            pointer-events: none; display: none; }
+  body.tv.hide #tvhint { display: block; }
 </style>
 </head>
 <body>
 <div id="stage">
-  <video id="v" autoplay muted playsinline></video>
-  <canvas id="mc" style="display:none; position:absolute;"></canvas>
+  <div id="view">
+    <video id="v" autoplay muted playsinline></video>
+    <canvas id="mc" style="display:none; position:absolute;"></canvas>
+  </div>
+  <div id="mstat"><span id="mnum"></span><canvas id="mgraph" width="180" height="40"></canvas></div>
   <div id="overlay"><span>Tap for sound</span></div>
+  <div id="tvhint">OK: menu &middot; CH+/CH&minus;: zoom &middot; arrows: look around &middot; red: motion &middot; green: camera</div>
   <div id="msg">connecting</div>
   <div id="lag"></div>
   <div id="alarm"></div>
@@ -101,13 +118,29 @@ let st = {};
 
 // ---- player: fetch-streamed fragmented MP4 into MediaSource, kept close to live ----
 let session = 0;
+// MediaSource on most browsers, ManagedMediaSource on iOS 17.1+, plain HLS on older iPhones.
+const MSClass = window.ManagedMediaSource || window.MediaSource;
+let usingHls = false, playError = '';
+function playHls() {
+  if (!v.canPlayType('application/vnd.apple.mpegurl')) {
+    playError = "This browser can't play the stream. Open this page in Safari or Chrome.";
+    return;
+  }
+  usingHls = true;
+  if (!/live\.m3u8/.test(v.src)) { v.src = '/live.m3u8'; v.play().catch(() => {}); }
+}
+v.addEventListener('error', () => {
+  if (usingHls) setTimeout(() => { v.src = '/live.m3u8?' + Date.now(); v.play().catch(() => {}); }, 2000);
+});
 async function play() {
   const my = ++session;
   try {
     const info = await (await fetch('/info', {cache: 'no-store'})).json();
     if (!info.up || !info.codec) throw new Error('phone not streaming');
     const type = `video/mp4; codecs="${info.codec}, mp4a.40.2"`;
-    const ms = new MediaSource();
+    if (usingHls || !MSClass || !MSClass.isTypeSupported(type)) { msg.textContent = ''; return playHls(); }
+    const ms = new MSClass();
+    if (window.ManagedMediaSource && MSClass === window.ManagedMediaSource) v.disableRemotePlayback = true;
     v.src = URL.createObjectURL(ms);
     await new Promise(r => ms.addEventListener('sourceopen', r, {once: true}));
     const sb = ms.addSourceBuffer(type);
@@ -149,6 +182,7 @@ setInterval(() => {
   const end = v.buffered.end(v.buffered.length - 1);
   const lag = end - v.currentTime;
   lagEl.textContent = lag > 0 ? lag.toFixed(1) + 's buffer' : '';
+  if (usingHls) { if (lag > 8) v.currentTime = end - 3; return; }
   if (lag > 0.6) v.currentTime = end - 0.1;
   v.playbackRate = lag > 0.25 ? 1.15 : 1.0;
   if (v.paused) v.play().catch(() => {});
@@ -170,12 +204,66 @@ async function cmd(c) {
   } catch (e) { msg.textContent = 'phone unreachable'; }
 }
 
+// ---- zoom and pan happen right here in the browser: instant and smooth, per viewer ----
+const stageEl = document.getElementById('stage'), viewEl = document.getElementById('view');
+const view = {s: 1, x: 0, y: 0};
+function applyView(animate) {
+  viewEl.style.transition = animate ? 'transform .2s ease-out' : 'none';
+  viewEl.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.s})`;
+}
+function clampView() {
+  const r = stageEl.getBoundingClientRect();
+  view.s = Math.max(1, Math.min(8, view.s));
+  view.x = Math.min(0, Math.max(r.width * (1 - view.s), view.x));
+  view.y = Math.min(0, Math.max(r.height * (1 - view.s), view.y));
+}
+function zoomAt(px, py, f, animate) {
+  const ns = Math.max(1, Math.min(8, view.s * f));
+  view.x = px - (px - view.x) * ns / view.s;
+  view.y = py - (py - view.y) * ns / view.s;
+  view.s = ns;
+  clampView();
+  applyView(animate);
+}
+function panBy(dx, dy, animate) { view.x += dx; view.y += dy; clampView(); applyView(animate); }
+stageEl.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = stageEl.getBoundingClientRect();
+  zoomAt(e.clientX - r.left, e.clientY - r.top, Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), false);
+}, {passive: false});
+const ptrs = new Map();
+stageEl.addEventListener('pointerdown', e => {
+  if (e.target.closest('#overlay')) return;
+  ptrs.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  stageEl.setPointerCapture(e.pointerId);
+});
+stageEl.addEventListener('pointermove', e => {
+  const p = ptrs.get(e.pointerId);
+  if (!p) return;
+  if (ptrs.size === 1) {
+    panBy(e.clientX - p.x, e.clientY - p.y, false);
+  } else if (ptrs.size === 2) {
+    const [a, b] = [...ptrs.values()];
+    const other = a === p ? b : a;
+    const d0 = Math.hypot(p.x - other.x, p.y - other.y), d1 = Math.hypot(e.clientX - other.x, e.clientY - other.y);
+    const r = stageEl.getBoundingClientRect();
+    if (d0 > 10) zoomAt((e.clientX + other.x) / 2 - r.left, (e.clientY + other.y) / 2 - r.top, d1 / d0, false);
+  }
+  p.x = e.clientX; p.y = e.clientY;
+});
+for (const ev of ['pointerup', 'pointercancel']) stageEl.addEventListener(ev, e => ptrs.delete(e.pointerId));
+window.addEventListener('resize', () => { clampView(); applyView(false); });
+
 function action(name) {
+  if (name.startsWith('nudge')) {   // "nudge DX DY": look that way by a quarter screen
+    const [, dx, dy] = name.split(' ').map(Number), r = stageEl.getBoundingClientRect();
+    return panBy(-dx * r.width, -dy * r.height, true);
+  }
   const z = st.zoom || 1;
   switch (name) {
-    case 'zoomin': return cmd('zoom ' + Math.min(8, z * 1.4).toFixed(2));
-    case 'zoomout': return cmd('zoom ' + Math.max(1, z / 1.4).toFixed(2));
-    case 'reset': return cmd('zoom 1').then(() => cmd('pan 0 0'));
+    case 'zoomin': { const r = stageEl.getBoundingClientRect(); return zoomAt(r.width / 2, r.height / 2, 1.4, true); }
+    case 'zoomout': { const r = stageEl.getBoundingClientRect(); return zoomAt(r.width / 2, r.height / 2, 1 / 1.4, true); }
+    case 'reset': view.s = 1; view.x = 0; view.y = 0; return applyView(true);
     case 'rotate': return cmd('rot ' + (((st.rot || 0) + 90) % 360));
     case 'brighter': return st.ae === 'auto' ? cmd('target ' + Math.min(0.8, (st.target || 0.4) + 0.06).toFixed(2))
                                              : cmd('ev ' + Math.min(12, (st.ev || 0) + 2));
@@ -214,7 +302,7 @@ function render() {
   const ae = st.ae === 'cam' ? `camera auto, ev ${st.ev}` :
              `${st.ae} · ISO ${st.iso} · ${Math.round(st.exp)} ms · gain ${(+st.gain).toFixed(1)}x${fps}`;
   document.getElementById('stat').textContent =
-    `${names[st.cam] || 'cam ' + st.cam} · ${ae} · zoom ${(+st.zoom).toFixed(1)}x · rot ${st.rot} · light ${(+st.brightness).toFixed(2)}`;
+    `${names[st.cam] || 'cam ' + st.cam} · ${ae} · zoom ${view.s.toFixed(1)}x · rot ${st.rot} · light ${(+st.brightness).toFixed(2)}`;
   const w = st.watchers || [], h = st.health || {};
   const who = w.length ? w.map(x => `${x.what} (.${x.ip.split('.').pop()})`).join(', ') : 'nobody';
   const hot = h.skin > 45 || h.battery > 42 || h.throttle >= 3;
@@ -226,13 +314,75 @@ function render() {
   phoneWarn = (hot ? 'PHONE HOT ' : '') + (h.level >= 0 && !h.charging ? 'NOT CHARGING' : '');
 }
 
-// Arrow keys / +/- for keyboards and TV remotes.
+// ---- keyboard and TV remote ----
+const TV = /[?&]tv=1/.test(location.search) || /web0s|webos|smarttv|netcast/i.test(navigator.userAgent);
+if (TV) {
+  document.body.classList.add('tv', 'hide');
+  document.querySelector('#overlay span').textContent = 'Press OK for sound';
+}
+function soundFromGesture() {
+  if (usingHls) return;
+  startAudio();
+  v.muted = false;
+  document.getElementById('overlay').style.display = 'none';
+}
+// Moves focus to the nearest button in a direction (remote arrows in the TV menu).
+function moveFocus(dir) {
+  const btns = Array.prototype.filter.call(document.querySelectorAll('#bar button'), b => b.offsetParent && !b.disabled);
+  const cur = btns.indexOf(document.activeElement) >= 0 ? document.activeElement : null;
+  if (!cur) { if (btns.length) btns[0].focus(); return; }
+  const c = cur.getBoundingClientRect(), cx = c.left + c.width / 2, cy = c.top + c.height / 2;
+  let best = null, bestScore = Infinity;
+  for (const b of btns) {
+    if (b === cur) continue;
+    const r = b.getBoundingClientRect(), x = r.left + r.width / 2 - cx, y = r.top + r.height / 2 - cy;
+    const along = {left: -x, right: x, up: -y, down: y}[dir];
+    const across = dir === 'left' || dir === 'right' ? Math.abs(y) : Math.abs(x);
+    if (along <= 1) continue;
+    const score = along + across * 3;
+    if (score < bestScore) { bestScore = score; best = b; }
+  }
+  if (best) best.focus();
+}
+const camOrder = ['4', '0', '2', '3'];
 document.addEventListener('keydown', e => {
-  const k = {ArrowLeft: 'nudge -0.25 0', ArrowRight: 'nudge 0.25 0', ArrowUp: 'nudge 0 -0.25', ArrowDown: 'nudge 0 0.25'}[e.key];
-  if (k && document.activeElement === document.body) { e.preventDefault(); return cmd(k); }
-  if (e.key === '+' || e.key === '=') action('zoomin');
-  if (e.key === '-') action('zoomout');
-  if (e.key === 'h') document.body.classList.toggle('hide');
+  const key = e.key, code = e.keyCode;
+  const dir = {ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down'}[key] ||
+              {37: 'left', 39: 'right', 38: 'up', 40: 'down'}[code];
+  if (TV) {
+    soundFromGesture();   // any remote press counts as the "tap" browsers want before sound
+    const menuOpen = !document.body.classList.contains('hide');
+    const back = code === 461 || key === 'Escape' || key === 'Backspace' || key === 'GoBack';
+    if (menuOpen) {
+      if (dir) { e.preventDefault(); return moveFocus(dir); }
+      if (back) { e.preventDefault(); document.body.classList.add('hide'); if (document.activeElement) document.activeElement.blur(); }
+      return;   // OK/Enter clicks the focused button by itself
+    }
+    if (key === 'Enter' || code === 13) {
+      e.preventDefault();
+      document.body.classList.remove('hide');
+      const first = document.querySelector('#bar button');
+      if (first) first.focus();
+      return;
+    }
+    if (back) { e.preventDefault(); window.close(); return; }
+    if (dir) { e.preventDefault(); return action({left: 'nudge -0.25 0', right: 'nudge 0.25 0', up: 'nudge 0 -0.25', down: 'nudge 0 0.25'}[dir]); }
+    if (code === 33 || key === 'PageUp') { e.preventDefault(); return action('zoomin'); }
+    if (code === 34 || key === 'PageDown') { e.preventDefault(); return action('zoomout'); }
+    if (code === 403) return document.getElementById('motion').click();
+    if (code === 404) {
+      const i = camOrder.indexOf(st.cam);
+      return cmd('cam ' + camOrder[(i + 1) % camOrder.length]);
+    }
+    if (code === 405) return document.getElementById('amode').click();
+    if (code === 406) return document.getElementById('vol+').click();
+    return;
+  }
+  const k = dir && {left: 'nudge -0.25 0', right: 'nudge 0.25 0', up: 'nudge 0 -0.25', down: 'nudge 0 0.25'}[dir];
+  if (k && document.activeElement === document.body) { e.preventDefault(); return action(k); }
+  if (key === '+' || key === '=') action('zoomin');
+  if (key === '-') action('zoomout');
+  if (key === 'h') document.body.classList.toggle('hide');
 });
 
 // ---- motion view: compare with the frame from ~0.5 s ago, on the GPU ----
@@ -242,7 +392,7 @@ const motion = (() => {
   const btn = document.getElementById('motion');
   const gl = canvas.getContext('webgl', {premultipliedAlpha: false, preserveDrawingBuffer: false});
   if (!gl) { btn.disabled = true; btn.title = 'WebGL not available'; return null; }
-  const SW = 192, SH = 144, RING = 8, STEP_MS = 70;   // ring of small frames, ~0.55 s back
+  const SW = 192, SH = 144, RING = 16, BACK_MS = 500;   // compare with the frame ~0.5 s ago
   let mode = 0, sens = 1.0;
   try { mode = +localStorage.getItem('motionMode') || 0; sens = +localStorage.getItem('motionSens') || 1.0; } catch (e) {}
 
@@ -340,7 +490,58 @@ const motion = (() => {
     ring.push({t, fb});
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  let head = 0, filled = 0, lastPush = 0;
+  let head = 0, filled = 0, lastUpload = -1, lastMeasure = 0;
+  const ringTime = new Array(RING).fill(0);
+  // motion %: share of the picture that changed vs ~0.5 s ago, measured on a tiny copy
+  const maskFs = `precision mediump float; uniform sampler2D now, old; uniform float sens; varying vec2 uv;
+    void main(){ float d = abs(texture2D(now, uv).r - texture2D(old, uv).r);
+      gl_FragColor = vec4(vec3(smoothstep(0.012 / sens, 0.06 / sens, d)), 1.); }`;
+  const maskProg = prog(maskFs);
+  const MW = 48, MH = 36;
+  const maskTex = tex(MW, MH), maskFb = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, maskFb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, maskTex, 0);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  const maskPx = new Uint8Array(MW * MH * 4);
+  const history = [];
+  const mnum = document.getElementById('mnum'), mg = document.getElementById('mgraph').getContext('2d');
+  function oldIndex(now) {
+    // newest stored frame at least BACK_MS old, else the oldest we have
+    let best = -1;
+    for (let k = 1; k < filled; k++) {
+      const i = (head - k + RING) % RING;
+      best = i;
+      if (now - ringTime[i] >= BACK_MS) break;
+    }
+    return best < 0 ? head : best;
+  }
+  function measure(now) {
+    const old = ring[oldIndex(now)];
+    pass(maskProg, maskFb, MW, MH, () => {
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ring[head].t);
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, old.t);
+      gl.uniform1i(gl.getUniformLocation(maskProg, 'now'), 1);
+      gl.uniform1i(gl.getUniformLocation(maskProg, 'old'), 2);
+      gl.uniform1f(gl.getUniformLocation(maskProg, 'sens'), sens);
+    });
+    gl.readPixels(0, 0, MW, MH, gl.RGBA, gl.UNSIGNED_BYTE, maskPx);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.activeTexture(gl.TEXTURE0);
+    let sum = 0;
+    for (let i = 0; i < maskPx.length; i += 4) sum += maskPx[i];
+    const pct = sum / (MW * MH * 255) * 100;
+    history.push(pct);
+    if (history.length > 240) history.shift();   // 60 s at 4 per second
+    mnum.textContent = 'motion ' + pct.toFixed(pct < 10 ? 1 : 0) + '%';
+    const W = 180, H = 40, top = Math.max(2, ...history);
+    mg.clearRect(0, 0, W, H);
+    mg.strokeStyle = '#e0b060'; mg.lineWidth = 1.5; mg.beginPath();
+    history.forEach((x, i) => {
+      const px = W - (history.length - 1 - i) * (W / 239), py = H - 2 - x / top * (H - 4);
+      i ? mg.lineTo(px, py) : mg.moveTo(px, py);
+    });
+    mg.stroke();
+  }
   const curSmall = tex(SW, SH), curFb = gl.createFramebuffer();
   gl.bindFramebuffer(gl.FRAMEBUFFER, curFb);
   gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, curSmall, 0);
@@ -378,25 +579,29 @@ const motion = (() => {
 
   function frame(now) {
     requestAnimationFrame(frame);
-    if (!mode || v.readyState < 2 || !v.videoWidth) return;
+    if (v.readyState < 2 || !v.videoWidth) return;
+    const fresh = v.currentTime !== lastUpload;
+    if (fresh) {   // only touch the GPU when a new video frame has arrived
+      lastUpload = v.currentTime;
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, vidTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
+      head = (head + 1) % RING; filled = Math.min(RING, filled + 1); ringTime[head] = now;
+      pass(blur, ring[head].fb, SW, SH, () => {
+        gl.uniform1i(gl.getUniformLocation(blur, 't'), 0);
+        gl.uniform2f(gl.getUniformLocation(blur, 'px'), 1.5 / SW, 1.5 / SH);
+      });
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    }
+    if (filled >= 2 && now - lastMeasure >= 250) { lastMeasure = now; measure(now); }
+    if (!mode) return;
     place();
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, vidTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
     if (mode === 3) { magnifyFrame(); return; }
     if (mode === 4) { flowFrame(); return; }
-    if (now - lastPush >= STEP_MS) {
-      lastPush = now;
-      head = (head + 1) % RING; filled = Math.min(RING, filled + 1);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, ring[head].fb);
-      gl.viewport(0, 0, SW, SH);
-      gl.useProgram(blur);
-      gl.uniform1i(gl.getUniformLocation(blur, 't'), 0);
-      gl.uniform2f(gl.getUniformLocation(blur, 'px'), 1.5 / SW, 1.5 / SH);
-      draw(blur);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    }
-    const old = ring[(head - Math.min(filled, RING) + 1 + RING) % RING];
+    const old = ring[oldIndex(now)];
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.useProgram(show);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, ring[head].t);
@@ -407,6 +612,7 @@ const motion = (() => {
     gl.uniform1f(gl.getUniformLocation(show, 'mode'), mode);
     gl.uniform1f(gl.getUniformLocation(show, 'sens'), sens);
     draw(show);
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   function pass(p, fb, w, h, setup) {
@@ -499,7 +705,7 @@ const motion = (() => {
   btn.onclick = () => {
     mode = (mode + 1) % 5;
     if (mode === 3 && !canMagnify) mode = 4;
-    filled = 0; evmPrimed = false; flowPrimed = false; lastVideoTime = -1;
+    evmPrimed = false; flowPrimed = false; lastVideoTime = -1;
     apply();
   };
   document.getElementById('msens-').onclick = () => { sens = Math.max(0.25, sens / 1.4); apply(); };
@@ -536,7 +742,13 @@ setInterval(() => {
   const unreachable = (now - statusOkAt) / 1000 > 8;
   const camAge = unreachable ? 0 : (st.frameAgeMs || 0) / 1000;
   let problem = '', age = 0;
-  if (stale > 3) { problem = unreachable ? 'PHONE UNREACHABLE' : 'NO SIGNAL'; age = stale; }
+  if (playError) {
+    banner.className = 'nosignal';
+    banner.innerHTML = `CAN'T PLAY HERE<small>${esc(playError)}</small>`;
+    alarm.className = 'nosignal';
+    return;
+  }
+  if (stale > (usingHls ? 8 : 3)) { problem = unreachable ? 'PHONE UNREACHABLE' : 'NO SIGNAL'; age = stale; }
   else if (camAge > 3) { problem = 'CAMERA FROZEN'; age = camAge; }
   if (problem) {
     banner.className = 'nosignal';
@@ -567,6 +779,7 @@ try {
   audio.sens = localStorage.getItem('asens') !== null ? +localStorage.getItem('asens') : 1;
 } catch (e) {}
 function startAudio() {
+  if (usingHls) return;   // iOS HLS: play the element's own audio; no boost/meter there
   if (audio.ctx) { audio.ctx.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
@@ -627,6 +840,20 @@ document.getElementById('vol+').onclick = () => { audio.vol = Math.min(VOLS.leng
 document.getElementById('amode').onclick = () => { audio.mode = audio.mode === 'vox' ? 'always' : 'vox'; renderAudio(); };
 document.getElementById('asens').onclick = () => { audio.sens = (audio.sens + 1) % SENS.length; renderAudio(); };
 renderAudio();
+
+// Where the browser allows sound without a tap (kiosk Firefox, the TV app), start it right away.
+setTimeout(() => {
+  if (usingHls || playError) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return;
+  const probe = new AC();
+  const allowed = probe.state === 'running';
+  probe.close();
+  if (!allowed) return;
+  startAudio();
+  v.muted = false;
+  document.getElementById('overlay').style.display = 'none';
+}, 1500);
 
 setInterval(() => cmd('status'), 2000);
 cmd('status');
