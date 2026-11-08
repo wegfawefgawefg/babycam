@@ -777,13 +777,14 @@ setInterval(() => {
   alarm.className = soundOn ? 'sound' : '';
   live.innerHTML = '&#9679; LIVE' + (unreachable ? ' <span class="warn">controls unreachable</span>' : '') +
     (phoneWarn ? ` <span class="warn">${phoneWarn}</span>` : '') +
-    (audio.lastAlert ? ` <span style="color:#c90">last sound ${ago((now - audio.lastAlert) / 1000)} ago</span>` : '');
+    (now < audio.alertUntil ? ' <span style="color:#e08a00">SOUND now</span>'
+      : audio.lastAlert ? ` <span style="color:#c90">last sound ${ago((now - audio.lastAlert) / 1000)} ago</span>` : '');
 }, 250);
 
 // ---- sound: boost, limiter, level meter, alerts, sound-activated mode ----
 const VOLS = [1, 2, 4, 8, 16, 32, 64];
 const SENS = [['low', 24], ['medium', 15], ['high', 9]];   // dB above the room's background noise
-const audio = {ctx: null, vol: 0, mode: 'always', sens: 1, floor: -70, voxUntil: 0, alertUntil: 0, lastAlert: 0};
+const audio = {ctx: null, vol: 0, mode: 'always', sens: 1, floor: -90, voxUntil: 0, alertUntil: 0, lastAlert: 0};
 try {
   audio.vol = +localStorage.getItem('vol') || 0;
   audio.mode = localStorage.getItem('amode') || 'always';
@@ -818,17 +819,23 @@ function beep(freq, dur) {
   o.connect(g); g.connect(audio.ctx.destination);
   o.start(); o.stop(audio.ctx.currentTime + dur);
 }
-function dbToPct(db) { return Math.max(0, Math.min(100, (db + 90) / 90 * 100)); }
+function dbToPct(db) { return Math.max(0, Math.min(100, (db + 110) / 90 * 100)); }
+// Alerts and the meter use the loudness measured on the phone (before any boost), so every
+// screen agrees and the boosts don't change what counts as a sound.
+let overCount = 0;
 function onLevel(db) {
-  // Background noise level: drops quickly, creeps up slowly (~30 s), so a cry stands out.
-  audio.floor += (db - audio.floor) * (db < audio.floor ? 0.2 : 0.0015);
-  const trig = audio.floor + SENS[audio.sens][1];
   const now = performance.now();
-  if (db > trig && db > -80) {
-    if (now - audio.alertUntil > 0) audio.lastAlert = now;
+  const trig = Math.max(audio.floor + SENS[audio.sens][1], -80);
+  overCount = db > trig ? overCount + 1 : 0;
+  if (overCount >= 2) {             // about half a second above: a real sound, not a click
+    audio.lastAlert = now;
     audio.alertUntil = now + 4000;
     audio.voxUntil = now + 10000;
   }
+  // Background level: drops quickly, rises slowly (~40 s), and never learns from a sound.
+  if (db < audio.floor) audio.floor += (db - audio.floor) * 0.2;
+  else if (now > audio.alertUntil) audio.floor += (db - audio.floor) * 0.006;
+  audio.floor = Math.max(audio.floor, -100);
   document.getElementById('meter').style.display = 'block';
   const fill = document.getElementById('meterFill');
   fill.style.height = dbToPct(db) + '%';
@@ -839,16 +846,11 @@ function onLevel(db) {
   if (audio.gain) audio.gain.gain.setTargetAtTime(open ? VOLS[audio.vol] : 0, audio.ctx.currentTime, 0.05);
   else if (directSound() && audio.started) v.muted = !open;
 }
-setInterval(() => {
-  if (!audio.an) return;
-  audio.an.getFloatTimeDomainData(audio.buf);
-  let sum = 0;
-  for (let i = 0; i < audio.buf.length; i++) sum += audio.buf[i] * audio.buf[i];
-  onLevel(20 * Math.log10(Math.sqrt(sum / audio.buf.length) + 1e-9));
-}, 50);
+let levelPolling = false;
 function startServerLevel() {
-  if (audio.started) return;
-  audio.started = true;
+  if (directSound()) audio.started = true;
+  if (levelPolling) return;
+  levelPolling = true;
   (async function poll() {
     try {
       const r = await fetch('/level', {cache: 'no-store'});
@@ -885,6 +887,7 @@ setTimeout(() => {
   document.getElementById('overlay').style.display = 'none';
 }, 1500);
 
+startServerLevel();
 setInterval(() => cmd('status'), 2000);
 cmd('status');
 play();
