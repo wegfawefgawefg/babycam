@@ -64,7 +64,10 @@ public final class Server {
         StreamConfigurationMap map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
         Size src = pickSource(map.getOutputSizes(android.graphics.SurfaceTexture.class));
         int w = Settings.width & ~15, h = (w * 3 / 4) & ~15;
-        boolean sideways = Settings.rot == 90 || Settings.rot == 270;
+        // Android already turns camera frames by the sensor's mounting angle (90 on most back
+        // cameras) before we see them, so the picture's shape depends on both that and our rotation.
+        Integer mount = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        boolean sideways = (Settings.rot % 180 == 90) != ((mount == null ? 0 : mount) % 180 == 90);
         int outW = sideways ? h : w, outH = sideways ? w : h;
         log("cam " + Settings.cam + " source " + src + " output " + outW + "x" + outH + " rot " + Settings.rot);
 
