@@ -34,15 +34,16 @@ def local_ip(peer):
 
 def server_up(ip):
     try:
-        with socket.create_connection((ip, 8703), timeout=2):
+        with socket.create_connection((ip, 8703), timeout=8):
             return True
     except OSError:
         return False
 
 
 def debug_ports(ip):
-    r = subprocess.run(['nmap', '-n', '-Pn', '-p', '30000-50000', '--min-rate', '4000', '-T4', ip],
-                       capture_output=True, timeout=60)
+    # Gentle: this goes over wifi, and a fast scan floods the band for everyone.
+    r = subprocess.run(['nmap', '-n', '-Pn', '-p', '30000-50000', '--max-rate', '300', ip],
+                       capture_output=True, timeout=180)
     return re.findall(r'^(\d+)/tcp open', r.stdout.decode(), re.M)
 
 
@@ -105,8 +106,9 @@ def watch(get_ip, log, state):
             time.sleep(5)
             continue
         down_since = down_since or time.monotonic()
-        if time.monotonic() - down_since < 6:
-            time.sleep(2)
+        # Slow wifi can look like "down"; only act after 30 s of no answer at all.
+        if time.monotonic() - down_since < 30:
+            time.sleep(5)
             continue
         if state.get('phone') != 'waiting':
             log('camera server is down; waiting for GO on the phone (Wireless debugging)')
@@ -126,7 +128,7 @@ def watch(get_ip, log, state):
                     log('camera server did not come up; see /data/local/tmp/babycam.log on the phone')
         except Exception as e:
             log('phone manager:', e)
-        time.sleep(5)
+        time.sleep(30)
 
 
 if __name__ == '__main__':

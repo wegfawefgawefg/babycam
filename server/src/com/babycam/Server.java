@@ -88,6 +88,8 @@ public final class Server {
 
         startControl();
         Http.start();
+        Radio.keepAwake();
+        Health.start();
         Mic.start();
         openCamera();
         Looper.loop();
@@ -108,7 +110,7 @@ public final class Server {
     static void startEncoder(int w, int h) throws Exception {
         MediaFormat f = MediaFormat.createVideoFormat("video/avc", w, h);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-        f.setInteger(MediaFormat.KEY_BIT_RATE, 2_500_000);
+        f.setInteger(MediaFormat.KEY_BIT_RATE, Settings.bitrate * 1000);
         f.setInteger(MediaFormat.KEY_FRAME_RATE, 15);
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
         f.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
@@ -348,6 +350,13 @@ public final class Server {
                 case "pan": Settings.panX = clamp1(Double.parseDouble(p[1])); Settings.panY = clamp1(Double.parseDouble(p[2])); break;
                 case "nudge": Settings.panX = clamp1(Settings.panX + Double.parseDouble(p[1])); Settings.panY = clamp1(Settings.panY + Double.parseDouble(p[2])); break;
                 case "mono": Settings.mono = !p[1].equals("0"); break;
+                case "bitrate": {
+                    Settings.bitrate = Math.max(100, Math.min(8000, Integer.parseInt(p[1])));
+                    Bundle b = new Bundle();
+                    b.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, Settings.bitrate * 1000);
+                    encoder.setParameters(b);
+                    break;
+                }
                 case "gain": Settings.gain = Double.parseDouble(p[1]); break;
                 case "gamma": Settings.gamma = Double.parseDouble(p[1]); break;
                 case "allow": Settings.allow = p[1]; break;
@@ -363,7 +372,7 @@ public final class Server {
                 case "quit": Settings.save(); System.exit(0);
                 default: return "commands: status | cam N | rot 0/90/180/270 | width N | ae auto/cam/manual | iso N | exp MS | fps N"
                     + " | maxexp MS | target 0-1 | maxgain X | ev N | zoom X | pan X Y | nudge DX DY | mono 0/1 | gain X | gamma X"
-                    + " | allow IP,IP | screen 0/1 | quit";
+                    + " | bitrate KBPS | allow IP,IP | screen 0/1 | quit";
             }
         } catch (Exception e) { return "bad command: " + e; }
         Settings.save();

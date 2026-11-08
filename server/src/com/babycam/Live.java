@@ -24,6 +24,35 @@ final class Live {
     static final class Viewer {
         final BlockingQueue<byte[]> q = new ArrayBlockingQueue<>(240);
         volatile boolean started, dead;
+        String ip = "", what = "";
+        final long since = System.currentTimeMillis();
+    }
+
+    // "who is watching" for the page: device kind from the User-Agent, plus address.
+    static String describe(String ua) {
+        String u = ua.toLowerCase();
+        if (u.contains("web0s") || u.contains("webos") || u.contains("smarttv") || u.contains("smart-tv")) return "TV";
+        if (u.contains("mpv") || u.contains("lavf") || u.contains("ffmpeg")) return "mpv";
+        if (u.contains("vlc")) return "VLC";
+        String browser = u.contains("firefox") ? "Firefox" : u.contains("edg/") ? "Edge" : u.contains("chrome") ? "Chrome"
+            : u.contains("safari") ? "Safari" : "player";
+        if (u.contains("iphone") || u.contains("ipad")) return browser + " on iPhone/iPad";
+        if (u.contains("android")) return browser + " on Android";
+        if (u.contains("windows")) return browser + " on Windows";
+        if (u.contains("mac os")) return browser + " on Mac";
+        if (u.contains("linux") || u.contains("x11")) return browser + " on Linux";
+        return browser;
+    }
+
+    static String watchersJson() {
+        StringBuilder b = new StringBuilder("[");
+        long now = System.currentTimeMillis();
+        for (Viewer v : viewers) {
+            if (b.length() > 1) b.append(',');
+            b.append("{\"ip\":\"").append(v.ip).append("\",\"what\":\"").append(v.what.replace("\"", ""))
+             .append("\",\"secs\":").append((now - v.since) / 1000).append('}');
+        }
+        return b.append(']').toString();
     }
 
     static final List<Viewer> viewers = new CopyOnWriteArrayList<>();
@@ -128,12 +157,14 @@ final class Live {
     }
 
     // Blocks, streaming to one HTTP viewer until it disconnects.
-    static void serve(OutputStream out) throws Exception {
+    static void serve(OutputStream out, String ip, String ua) throws Exception {
         byte[] in = init;
         if (in == null) throw new IllegalStateException("not streaming yet");
         out.write(in);
         out.flush();
         Viewer v = new Viewer();
+        v.ip = ip;
+        v.what = describe(ua);
         viewers.add(v);
         Server.requestKeyframe();
         try {

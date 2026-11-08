@@ -70,7 +70,10 @@ final class Http {
                     out.write(("HTTP/1.0 200 OK\r\nContent-Type: video/mp4\r\nCache-Control: no-store\r\n"
                         + "Access-Control-Allow-Origin: *\r\n\r\n").getBytes());
                     Server.log("viewer joined " + sock.getInetAddress().getHostAddress());
-                    try { Live.serve(out); } finally { Server.log("viewer left " + sock.getInetAddress().getHostAddress()); }
+                    String ua = "";
+                    for (String h : request.split("\r\n"))
+                        if (h.toLowerCase().startsWith("user-agent:")) ua = h.substring(11).trim();
+                    try { Live.serve(out, sock.getInetAddress().getHostAddress(), ua); } finally { Server.log("viewer left " + sock.getInetAddress().getHostAddress()); }
                     break;
                 default:
                     send(out, 404, "text/plain", "not found".getBytes());

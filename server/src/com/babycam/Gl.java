@@ -19,6 +19,7 @@ import java.nio.FloatBuffer;
 // Every few frames also renders a tiny copy to measure brightness for our auto exposure.
 final class Gl {
     static volatile double lastMean = 0;
+    static volatile long lastFrameNs = System.nanoTime();
 
     static final String VS =
         "attribute vec2 aPos; varying vec2 vUv;\n" +
@@ -133,6 +134,7 @@ final class Gl {
 
     void frame() {
         st.updateTexImage();
+        lastFrameNs = System.nanoTime();
         st.getTransformMatrix(stMatrix);
         frames++;
         if (firstFrameHook != null) { Runnable r = firstFrameHook; firstFrameHook = null; r.run(); }
