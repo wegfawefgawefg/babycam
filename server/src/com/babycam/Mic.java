@@ -9,6 +9,19 @@ import android.media.MediaRecorder;
 
 // Mic -> AAC (hardware/software MediaCodec) -> live stream.
 final class Mic {
+    // Mic boost with a soft limiter (tanh): quiet sounds come up, loud ones round off instead of clipping.
+    static void boost(byte[] pcm, int n, int gain) {
+        if (gain <= 1) return;
+        double norm = Math.tanh(gain);
+        for (int k = 0; k + 1 < n; k += 2) {
+            double x = (short) ((pcm[k] & 0xff) | (pcm[k + 1] << 8)) / 32768.0;
+            double y = Math.tanh(x * gain) / Math.max(norm, 1e-6) * Math.min(1, norm);
+            int v = (int) Math.round(Math.max(-1, Math.min(1, y)) * 32767);
+            pcm[k] = (byte) v;
+            pcm[k + 1] = (byte) (v >> 8);
+        }
+    }
+
     static void start() {
         new Thread(() -> {
             try {
@@ -36,6 +49,8 @@ final class Mic {
                 while (true) {
                     int n = rec.read(buf, 0, buf.length);
                     if (n <= 0) continue;
+                    Level.add(buf, n);
+                    boost(buf, n, Settings.micGain);
                     int in = aac.dequeueInputBuffer(20_000);
                     if (in >= 0) {
                         java.nio.ByteBuffer ib = aac.getInputBuffer(in);

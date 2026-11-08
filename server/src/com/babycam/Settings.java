@@ -28,7 +28,8 @@ final class Settings {
     static volatile boolean mono = true;
     static volatile double gain = 1;      // digital gain (auto exposure drives it in auto)
     static volatile double gamma = 1;
-    static volatile int bitrate = 600;   // kbps; one copy per viewer goes over the phone's wifi
+    static volatile int bitrate = 600;
+    static volatile int micGain = 1;     // boost applied on the phone, so every viewer (TV, iPhone) hears it   // kbps; one copy per viewer goes over the phone's wifi
     // Only these addresses may use the control port (the PC starter). The phone itself is always allowed.
     static volatile String allow = "";
 
@@ -63,6 +64,7 @@ final class Settings {
         gamma = Double.parseDouble(p.getProperty("gamma", "" + gamma));
         allow = p.getProperty("allow", allow);
         bitrate = Integer.parseInt(p.getProperty("bitrate", "" + bitrate));
+        micGain = Integer.parseInt(p.getProperty("micGain", "" + micGain));
     }
 
     static synchronized void save() {
@@ -72,7 +74,7 @@ final class Settings {
         p.setProperty("fps", "" + fps); p.setProperty("maxExp", "" + maxExp); p.setProperty("target", "" + target);
         p.setProperty("maxGain", "" + maxGain); p.setProperty("ev", "" + ev); p.setProperty("zoom", "" + zoom);
         p.setProperty("panX", "" + panX); p.setProperty("panY", "" + panY); p.setProperty("mono", "" + mono);
-        p.setProperty("gain", "" + gain); p.setProperty("gamma", "" + gamma); p.setProperty("allow", allow); p.setProperty("bitrate", "" + bitrate);
+        p.setProperty("gain", "" + gain); p.setProperty("gamma", "" + gamma); p.setProperty("allow", allow); p.setProperty("bitrate", "" + bitrate); p.setProperty("micGain", "" + micGain);
         try (FileOutputStream o = new FileOutputStream(FILE)) { p.store(o, "babycam"); } catch (Exception e) { Server.log("save " + e); }
     }
 
@@ -81,7 +83,7 @@ final class Settings {
             + ",\"exp\":" + r(exp) + ",\"fps\":" + fps + ",\"maxExp\":" + r(maxExp) + ",\"target\":" + r(target)
             + ",\"maxGain\":" + r(maxGain) + ",\"ev\":" + ev + ",\"zoom\":" + r(zoom) + ",\"panX\":" + r(panX)
             + ",\"panY\":" + r(panY) + ",\"mono\":" + mono + ",\"gain\":" + r(gain) + ",\"gamma\":" + r(gamma)
-            + ",\"bitrate\":" + bitrate + ",\"brightness\":" + r(Gl.lastMean) + ",\"cams\":\"" + Server.camList + "\",\"allow\":\"" + allow
+            + ",\"bitrate\":" + bitrate + ",\"micGain\":" + micGain + ",\"brightness\":" + r(Gl.lastMean) + ",\"cams\":\"" + Server.camList + "\",\"allow\":\"" + allow
             + "\",\"viewers\":" + Live.viewers.size() + ",\"watchers\":" + Live.watchersJson()
             + ",\"frameAgeMs\":" + (System.nanoTime() - Gl.lastFrameNs) / 1_000_000 + ",\"health\":" + Health.json() + "}";
     }

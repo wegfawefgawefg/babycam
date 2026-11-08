@@ -67,7 +67,7 @@
   </div>
   <div id="mstat"><span id="mnum"></span><canvas id="mgraph" width="180" height="40"></canvas></div>
   <div id="overlay"><span>Tap for sound</span></div>
-  <div id="tvhint">OK: menu &middot; CH+/CH&minus;: zoom &middot; arrows: look around &middot; red: motion &middot; green: camera</div>
+  <div id="tvhint">OK: menu &middot; CH+/CH&minus;: zoom &middot; arrows: look around &middot; red: motion &middot; green: camera &middot; yellow: sound mode &middot; volume: TV buttons</div>
   <div id="msg">connecting</div>
   <div id="lag"></div>
   <div id="alarm"></div>
@@ -99,6 +99,9 @@
     <button id="vol-" title="Quieter">&minus;</button><button id="volv" title="Volume boost">1x</button><button id="vol+" title="Louder (up to 64x)">+</button>
     <button id="amode" title="Always on, or silent until a sound (like a baby monitor)">Always on</button>
     <button id="asens" title="How loud above the room's background noise counts as a sound alert">Alert: medium</button>
+  </div>
+  <div class="grp"><span class="lbl">Mic</span>
+    <button id="mic-" title="Less mic boost (on the phone, for every viewer)">&minus;</button><button id="micv" title="Mic boost on the phone">1x</button><button id="mic+" title="More mic boost: hear quiet sounds on every screen">+</button>
   </div>
   <div class="grp"><span class="lbl">Quality</span>
     <button id="q" title="Video bitrate: lower is lighter on the wifi">?</button>
@@ -280,6 +283,13 @@ document.querySelectorAll('button[data-cam]').forEach(b => b.onclick = () => {
   msg.textContent = 'switching camera';
   cmd('cam ' + b.dataset.cam);
 });
+const MICS = [1, 2, 4, 8, 16, 32, 64];
+function micStep(d) {
+  const i = Math.max(0, MICS.indexOf(st.micGain || 1));
+  cmd('micgain ' + MICS[Math.max(0, Math.min(MICS.length - 1, i + d))]);
+}
+document.getElementById('mic-').onclick = () => micStep(-1);
+document.getElementById('mic+').onclick = () => micStep(1);
 const qualities = [[300, 'Low'], [600, 'Normal'], [1200, 'High'], [2500, 'Max']];
 document.getElementById('q').onclick = () => {
   const i = qualities.findIndex(q => q[0] >= (st.bitrate || 600));
@@ -290,6 +300,7 @@ document.getElementById('stage').addEventListener('dblclick', () => document.bod
 
 const names = {'4': 'IR', '0': 'Main', '2': 'Wide', '3': 'Tele', '1': 'Front'};
 function render() {
+  document.getElementById('micv').textContent = (st.micGain || 1) + 'x';
   const qb = document.getElementById('q');
   if (qb && st.bitrate) {
     const q = qualities.find(q => q[0] >= st.bitrate) || qualities[qualities.length - 1];
@@ -375,7 +386,7 @@ document.addEventListener('keydown', e => {
       return cmd('cam ' + camOrder[(i + 1) % camOrder.length]);
     }
     if (code === 405) return document.getElementById('amode').click();
-    if (code === 406) return document.getElementById('vol+').click();
+    if (code === 406) return document.getElementById('asens').click();
     return;
   }
   const k = dir && {left: 'nudge -0.25 0', right: 'nudge 0.25 0', up: 'nudge 0 -0.25', down: 'nudge 0 0.25'}[dir];
@@ -778,8 +789,11 @@ try {
   audio.mode = localStorage.getItem('amode') || 'always';
   audio.sens = localStorage.getItem('asens') !== null ? +localStorage.getItem('asens') : 1;
 } catch (e) {}
+// LG webOS (and iOS HLS) give a Web Audio tap of the video pure silence, so there the video
+// plays its own sound and the meter/alerts use the level the phone measures (/level).
+function directSound() { return usingHls || TV; }
 function startAudio() {
-  if (usingHls) return;   // iOS HLS: play the element's own audio; no boost/meter there
+  if (directSound()) { v.muted = false; v.volume = 1; startServerLevel(); return; }
   if (audio.ctx) { audio.ctx.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return;
@@ -805,12 +819,7 @@ function beep(freq, dur) {
   o.start(); o.stop(audio.ctx.currentTime + dur);
 }
 function dbToPct(db) { return Math.max(0, Math.min(100, (db + 90) / 90 * 100)); }
-setInterval(() => {
-  if (!audio.an) return;
-  audio.an.getFloatTimeDomainData(audio.buf);
-  let sum = 0;
-  for (let i = 0; i < audio.buf.length; i++) sum += audio.buf[i] * audio.buf[i];
-  const db = 20 * Math.log10(Math.sqrt(sum / audio.buf.length) + 1e-9);
+function onLevel(db) {
   // Background noise level: drops quickly, creeps up slowly (~30 s), so a cry stands out.
   audio.floor += (db - audio.floor) * (db < audio.floor ? 0.2 : 0.0015);
   const trig = audio.floor + SENS[audio.sens][1];
@@ -820,15 +829,36 @@ setInterval(() => {
     audio.alertUntil = now + 4000;
     audio.voxUntil = now + 10000;
   }
+  document.getElementById('meter').style.display = 'block';
   const fill = document.getElementById('meterFill');
   fill.style.height = dbToPct(db) + '%';
   fill.style.background = db > trig ? '#e08a00' : '#4c4';
   document.getElementById('meterFloor').style.bottom = dbToPct(audio.floor) + '%';
   document.getElementById('meterTrig').style.bottom = dbToPct(trig) + '%';
-  const target = audio.mode === 'vox' && now > audio.voxUntil ? 0 : VOLS[audio.vol];
-  audio.gain.gain.setTargetAtTime(target, audio.ctx.currentTime, 0.05);
+  const open = !(audio.mode === 'vox' && now > audio.voxUntil);
+  if (audio.gain) audio.gain.gain.setTargetAtTime(open ? VOLS[audio.vol] : 0, audio.ctx.currentTime, 0.05);
+  else if (directSound() && audio.started) v.muted = !open;
+}
+setInterval(() => {
+  if (!audio.an) return;
+  audio.an.getFloatTimeDomainData(audio.buf);
+  let sum = 0;
+  for (let i = 0; i < audio.buf.length; i++) sum += audio.buf[i] * audio.buf[i];
+  onLevel(20 * Math.log10(Math.sqrt(sum / audio.buf.length) + 1e-9));
 }, 50);
+function startServerLevel() {
+  if (audio.started) return;
+  audio.started = true;
+  (async function poll() {
+    try {
+      const r = await fetch('/level', {cache: 'no-store'});
+      onLevel((await r.json()).db);
+    } catch (e) {}
+    setTimeout(poll, 250);
+  })();
+}
 function renderAudio() {
+  for (const id of ['vol-', 'volv', 'vol+']) document.getElementById(id).style.display = directSound() ? 'none' : '';
   document.getElementById('volv').textContent = VOLS[audio.vol] + 'x';
   document.getElementById('amode').textContent = audio.mode === 'vox' ? 'On sound only' : 'Always on';
   document.getElementById('amode').classList.toggle('on', audio.mode === 'vox');

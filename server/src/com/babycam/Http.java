@@ -64,6 +64,10 @@ final class Http {
                     send(out, 200, "application/json", reply.getBytes(StandardCharsets.UTF_8));
                     break;
                 }
+                case "/level":
+                    send(out, 200, "application/json", String.format(java.util.Locale.ROOT, "{\"db\":%.1f}", Level.recent())
+                        .getBytes(StandardCharsets.UTF_8));
+                    break;
                 case "/live.m3u8":
                     send(out, 200, "application/vnd.apple.mpegurl", Live.playlist().getBytes(StandardCharsets.UTF_8));
                     break;
