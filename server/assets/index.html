@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Babycam</title>
+<style>
+  :root { --bg: #000; --panel: #121212; --btn: #1e1e1e; --btn-on: #3a3220; --text: #c8c2b4; --dim: #7a756b; --accent: #e0b060; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 16px/1.3 system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  #stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #000; }
+  video { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  #overlay span { background: rgba(0,0,0,.7); border: 1px solid var(--dim); padding: 14px 22px; border-radius: 10px; font-size: 20px; }
+  #msg { position: absolute; top: 8px; left: 10px; color: var(--dim); font-size: 13px; pointer-events: none; }
+  #lag { position: absolute; top: 8px; right: 10px; color: var(--dim); font-size: 13px; pointer-events: none; }
+  #bar { background: var(--panel); padding: 8px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+  .grp { display: flex; gap: 4px; align-items: center; padding: 0 6px; border-right: 1px solid #222; }
+  .grp:last-child { border-right: none; }
+  .lbl { color: var(--dim); font-size: 12px; margin-right: 2px; }
+  button { background: var(--btn); color: var(--text); border: 1px solid #2a2a2a; border-radius: 8px; padding: 9px 12px; font-size: 15px; min-width: 44px; cursor: pointer; }
+  button:hover, button:focus { border-color: var(--accent); outline: none; }
+  button.on { background: var(--btn-on); color: var(--accent); border-color: #5a4a28; }
+  #stat { width: 100%; text-align: center; color: var(--dim); font-size: 12px; }
+  body.hide #bar { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="v" autoplay muted playsinline></video>
+  <div id="overlay"><span>Tap for sound</span></div>
+  <div id="msg">connecting</div>
+  <div id="lag"></div>
+</div>
+<div id="bar">
+  <div class="grp"><span class="lbl">Camera</span>
+    <button data-cam="4">IR</button><button data-cam="0">Main</button><button data-cam="2">Wide</button><button data-cam="3">Tele</button>
+  </div>
+  <div class="grp"><span class="lbl">View</span>
+    <button data-c="zoomout">&minus;</button><button data-c="zoomin">+</button>
+    <button data-c="nudge -0.25 0">&larr;</button><button data-c="nudge 0 -0.25">&uarr;</button>
+    <button data-c="nudge 0 0.25">&darr;</button><button data-c="nudge 0.25 0">&rarr;</button>
+    <button data-c="reset">Reset</button><button data-c="rotate">Rotate</button>
+  </div>
+  <div class="grp"><span class="lbl">Light</span>
+    <button data-c="darker">Darker</button><button data-c="brighter">Brighter</button>
+    <button id="mono" data-c="mono">B&amp;W</button>
+    <button id="night" data-c="night" title="Allow long shutter (lower fps) in the dark">Night</button>
+  </div>
+  <div class="grp"><span class="lbl">Phone</span>
+    <button data-c="screen 0">Screen off</button><button data-c="screen 1">Screen on</button>
+    <button id="hide">Hide</button>
+  </div>
+  <div id="stat"></div>
+</div>
+<script>
+const v = document.getElementById('v');
+const msg = document.getElementById('msg');
+const lagEl = document.getElementById('lag');
+let st = {};
+
+// ---- player: fetch-streamed fragmented MP4 into MediaSource, kept close to live ----
+let session = 0;
+async function play() {
+  const my = ++session;
+  try {
+    const info = await (await fetch('/info', {cache: 'no-store'})).json();
+    if (!info.up || !info.codec) throw new Error('phone not streaming');
+    const type = `video/mp4; codecs="${info.codec}, mp4a.40.2"`;
+    const ms = new MediaSource();
+    v.src = URL.createObjectURL(ms);
+    await new Promise(r => ms.addEventListener('sourceopen', r, {once: true}));
+    const sb = ms.addSourceBuffer(type);
+    const q = [];
+    const pump = () => {
+      if (sb.updating || !q.length) return;
+      try { sb.appendBuffer(q.shift()); } catch (e) { cleanup(); }
+    };
+    let trimAt = 0;
+    sb.addEventListener('updateend', () => {
+      const now = performance.now();
+      if (now > trimAt && v.currentTime > 30 && !sb.updating) {
+        trimAt = now + 10000;
+        try { sb.remove(0, v.currentTime - 20); return; } catch (e) {}
+      }
+      pump();
+    });
+    const resp = await fetch('/live.mp4', {cache: 'no-store'});
+    if (!resp.ok) throw new Error('stream ' + resp.status);
+    const reader = resp.body.getReader();
+    msg.textContent = '';
+    let dead = false;
+    function cleanup() { dead = true; try { reader.cancel(); } catch (e) {} }
+    while (!dead && my === session) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      q.push(value);
+      pump();
+    }
+  } catch (e) {
+    msg.textContent = String(e.message || e);
+  }
+  if (my === session) setTimeout(play, 400);
+}
+
+// Stay near the live edge: jump if far behind, speed up slightly if a little behind.
+setInterval(() => {
+  if (!v.buffered.length) return;
+  const end = v.buffered.end(v.buffered.length - 1);
+  const lag = end - v.currentTime;
+  lagEl.textContent = lag > 0 ? lag.toFixed(1) + 's buffer' : '';
+  if (lag > 0.6) v.currentTime = end - 0.1;
+  v.playbackRate = lag > 0.25 ? 1.15 : 1.0;
+  if (v.paused) v.play().catch(() => {});
+}, 250);
+
+document.getElementById('overlay').onclick = () => {
+  v.muted = false;
+  v.play().catch(() => {});
+  document.getElementById('overlay').style.display = 'none';
+};
+
+// ---- controls ----
+async function cmd(c) {
+  try {
+    const r = await fetch('/api?c=' + encodeURIComponent(c), {cache: 'no-store'});
+    const t = await r.text();
+    try { st = JSON.parse(t); render(); } catch (e) { msg.textContent = t; setTimeout(() => msg.textContent = '', 3000); }
+  } catch (e) { msg.textContent = 'phone unreachable'; }
+}
+
+function action(name) {
+  const z = st.zoom || 1;
+  switch (name) {
+    case 'zoomin': return cmd('zoom ' + Math.min(8, z * 1.4).toFixed(2));
+    case 'zoomout': return cmd('zoom ' + Math.max(1, z / 1.4).toFixed(2));
+    case 'reset': return cmd('zoom 1').then(() => cmd('pan 0 0'));
+    case 'rotate': return cmd('rot ' + (((st.rot || 0) + 90) % 360));
+    case 'brighter': return st.ae === 'auto' ? cmd('target ' + Math.min(0.8, (st.target || 0.4) + 0.06).toFixed(2))
+                                             : cmd('ev ' + Math.min(12, (st.ev || 0) + 2));
+    case 'darker': return st.ae === 'auto' ? cmd('target ' + Math.max(0.08, (st.target || 0.4) - 0.06).toFixed(2))
+                                           : cmd('ev ' + Math.max(-12, (st.ev || 0) - 2));
+    case 'mono': return cmd('mono ' + (st.mono ? 0 : 1));
+    case 'night': return cmd('maxexp ' + ((st.maxExp || 125) > 130 ? 66 : 199));
+    default: return cmd(name);
+  }
+}
+
+document.querySelectorAll('button[data-c]').forEach(b => b.onclick = () => action(b.dataset.c));
+document.querySelectorAll('button[data-cam]').forEach(b => b.onclick = () => {
+  msg.textContent = 'switching camera';
+  cmd('cam ' + b.dataset.cam);
+});
+document.getElementById('hide').onclick = () => document.body.classList.add('hide');
+document.getElementById('stage').addEventListener('dblclick', () => document.body.classList.toggle('hide'));
+
+const names = {'4': 'IR', '0': 'Main', '2': 'Wide', '3': 'Tele', '1': 'Front'};
+function render() {
+  document.querySelectorAll('button[data-cam]').forEach(b => b.classList.toggle('on', b.dataset.cam === st.cam));
+  document.getElementById('mono').classList.toggle('on', !!st.mono);
+  document.getElementById('night').classList.toggle('on', (st.maxExp || 0) > 130);
+  const fps = st.ae === 'cam' ? '' : ` · ${Math.min(st.fps, Math.floor(1000 / Math.max(1, st.exp)))} fps`;
+  const ae = st.ae === 'cam' ? `camera auto, ev ${st.ev}` :
+             `${st.ae} · ISO ${st.iso} · ${Math.round(st.exp)} ms · gain ${(+st.gain).toFixed(1)}x${fps}`;
+  document.getElementById('stat').textContent =
+    `${names[st.cam] || 'cam ' + st.cam} · ${ae} · zoom ${(+st.zoom).toFixed(1)}x · rot ${st.rot} · light ${(+st.brightness).toFixed(2)}`;
+}
+
+// Arrow keys / +/- for keyboards and TV remotes.
+document.addEventListener('keydown', e => {
+  const k = {ArrowLeft: 'nudge -0.25 0', ArrowRight: 'nudge 0.25 0', ArrowUp: 'nudge 0 -0.25', ArrowDown: 'nudge 0 0.25'}[e.key];
+  if (k && document.activeElement === document.body) { e.preventDefault(); return cmd(k); }
+  if (e.key === '+' || e.key === '=') action('zoomin');
+  if (e.key === '-') action('zoomout');
+  if (e.key === 'h') document.body.classList.toggle('hide');
+});
+
+setInterval(() => cmd('status'), 3000);
+cmd('status');
+play();
+</script>
+</body>
+</html>
