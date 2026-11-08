@@ -334,7 +334,7 @@ if (TV) {
 function soundFromGesture() {
   if (usingHls) return;
   startAudio();
-  v.muted = false;
+  if (!TV) v.muted = false;
   document.getElementById('overlay').style.display = 'none';
 }
 // Moves focus to the nearest button in a direction (remote arrows in the TV menu).
@@ -793,7 +793,10 @@ try {
 // LG webOS (and iOS HLS) give a Web Audio tap of the video pure silence, so there the video
 // plays its own sound and the meter/alerts use the level the phone measures (/level).
 function directSound() { return usingHls || TV; }
+// TV (LG webOS): it plays no sound from the stream at all, so the TV is picture only; the
+// meter and sound alerts still work from the level the phone measures.
 function startAudio() {
+  if (TV) { v.muted = true; startServerLevel(); return; }
   if (directSound()) { v.muted = false; v.volume = 1; startServerLevel(); return; }
   if (audio.ctx) { audio.ctx.resume(); return; }
   const AC = window.AudioContext || window.webkitAudioContext;
@@ -883,8 +886,10 @@ setTimeout(() => {
   probe.close();
   if (!allowed) return;
   startAudio();
-  v.muted = false;
-  document.getElementById('overlay').style.display = 'none';
+  if (!TV) v.muted = false;
+  const ov = document.getElementById('overlay');
+  ov.querySelector('span').textContent = TV ? 'Picture only on this TV' : 'Sound on';
+  setTimeout(() => { ov.style.display = 'none'; }, 1500);
 }, 1500);
 
 startServerLevel();
