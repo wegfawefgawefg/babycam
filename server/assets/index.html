@@ -338,6 +338,9 @@ if (TV) {
 function tvKeepAwake() {
   if (typeof PalmServiceBridge === 'undefined') return;
   const POWER = 'luna://com.webos.service.tvpower/power/';
+  // A fresh name per page load: the TV keeps a reloaded page's old registration and keeps
+  // asking that dead one, so reusing the name means nobody answers.
+  const name = 'babycam' + Date.now();
   const reg = new PalmServiceBridge();
   window.keepAwakeBridge = reg; // keep the subscription alive
   reg.onservicecallback = msg => {
@@ -347,9 +350,9 @@ function tvKeepAwake() {
     const ans = new PalmServiceBridge();
     window.keepAwakeAnswer = ans;
     ans.call(POWER + 'responseScreenSaverRequest',
-             JSON.stringify({clientName: 'babycam', ack: false, timestamp: r.timestamp}));
+             JSON.stringify({clientName: name, ack: false, timestamp: r.timestamp}));
   };
-  reg.call(POWER + 'registerScreenSaverRequest', JSON.stringify({subscribe: true, clientName: 'babycam'}));
+  reg.call(POWER + 'registerScreenSaverRequest', JSON.stringify({subscribe: true, clientName: name}));
 }
 function soundFromGesture() {
   if (usingHls) return;
