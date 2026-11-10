@@ -330,6 +330,26 @@ const TV = /[?&]tv=1/.test(location.search) || /web0s|webos|smarttv|netcast/i.te
 if (TV) {
   document.body.classList.add('tv', 'hide');
   document.querySelector('#overlay span').textContent = 'Press OK for sound';
+  tvKeepAwake();
+}
+// LG webOS asks every registered app before it starts the screensaver; the monitor always says
+// "not now". The TV app runs this page, so it gets the app's PalmServiceBridge. (The TV's own
+// 4-hour Auto Power Off is a TV setting no app can change.)
+function tvKeepAwake() {
+  if (typeof PalmServiceBridge === 'undefined') return;
+  const POWER = 'luna://com.webos.service.tvpower/power/';
+  const reg = new PalmServiceBridge();
+  window.keepAwakeBridge = reg; // keep the subscription alive
+  reg.onservicecallback = msg => {
+    let r = {};
+    try { r = JSON.parse(msg); } catch (e) { return; }
+    if (!r.timestamp) return;
+    const ans = new PalmServiceBridge();
+    window.keepAwakeAnswer = ans;
+    ans.call(POWER + 'responseScreenSaverRequest',
+             JSON.stringify({clientName: 'babycam', ack: false, timestamp: r.timestamp}));
+  };
+  reg.call(POWER + 'registerScreenSaverRequest', JSON.stringify({subscribe: true, clientName: 'babycam'}));
 }
 function soundFromGesture() {
   if (usingHls) return;
