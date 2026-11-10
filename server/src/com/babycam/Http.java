@@ -34,7 +34,11 @@ final class Http {
             sock.setTcpNoDelay(true);
             sock.setSoTimeout(15000);
             InputStream in = sock.getInputStream();
-            String request = readHeaders(in);
+            // Browsers that try https:// first (Brave) send a TLS hello (0x16). Reset at once so
+            // they fall back to http instead of waiting out the timeout and giving up.
+            int first = in.read();
+            if (first < 0 || first == 0x16) { sock.setSoLinger(true, 0); return; }
+            String request = (char) first + readHeaders(in);
             String line = request.split("\r\n", 2)[0];
             String[] parts = line.split(" ");
             if (parts.length < 2) return;
