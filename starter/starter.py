@@ -40,11 +40,28 @@ def server_up(ip):
         return False
 
 
-def debug_ports(ip):
-    # Gentle: this goes over wifi, and a fast scan floods the band for everyone.
-    r = subprocess.run(['nmap', '-n', '-Pn', '-p', '30000-50000', '--max-rate', '300', ip],
-                       capture_output=True, timeout=180)
+def mdns_ports(ip):
+    """Wireless debugging announces its port over mDNS; asking costs nothing."""
+    try:
+        r = subprocess.run([ADB, 'mdns', 'services'], capture_output=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return []
+    return re.findall(r'_adb-tls-connect\._tcp\s+' + re.escape(ip) + r':(\d+)', r.stdout.decode())
+
+
+def scan_ports(ip):
+    # Fallback when mDNS doesn't answer. Gentle: this goes over wifi, and a fast scan floods
+    # the band for everyone. A slow phone can make nmap take minutes.
+    try:
+        r = subprocess.run(['nmap', '-n', '-Pn', '-p', '30000-50000', '--max-rate', '300',
+                            '--max-retries', '1', ip], capture_output=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return []
     return re.findall(r'^(\d+)/tcp open', r.stdout.decode(), re.M)
+
+
+def debug_ports(ip):
+    return mdns_ports(ip) or scan_ports(ip)
 
 
 def connect(ip):
