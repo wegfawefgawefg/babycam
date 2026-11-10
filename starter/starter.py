@@ -60,13 +60,14 @@ def scan_ports(ip):
     return re.findall(r'^(\d+)/tcp open', r.stdout.decode(), re.M)
 
 
-def debug_ports(ip):
-    return mdns_ports(ip) or scan_ports(ip)
-
-
 def connect(ip):
-    """adb serial for the phone, or None."""
-    for port in debug_ports(ip):
+    """adb serial for the phone, or None. adb's mDNS list can hold a stale port, so scan when
+    none of its ports answer."""
+    return try_ports(ip, mdns_ports(ip)) or try_ports(ip, scan_ports(ip))
+
+
+def try_ports(ip, ports):
+    for port in ports:
         serial = f'{ip}:{port}'
         try:
             r = subprocess.run([ADB, 'connect', serial], capture_output=True, timeout=4).stdout.decode()
