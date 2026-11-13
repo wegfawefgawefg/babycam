@@ -73,10 +73,19 @@ def scan_ports(ip):
     return re.findall(r'^(\d+)/tcp open', r.stdout.decode(), re.M)
 
 
+SCAN_EVERY = 600  # seconds; the scan is wifi traffic, mDNS is the normal way in
+last_scan = 0.0
+
+
 def connect(ip):
     """adb serial for the phone, or None. adb's mDNS list can hold a stale port, so scan when
-    none of its ports answer."""
-    return try_ports(ip, mdns_ports(ip)) or try_ports(ip, scan_ports(ip))
+    none of its ports answer, but rarely: while the phone is off this runs all night."""
+    global last_scan
+    serial = try_ports(ip, mdns_ports(ip))
+    if serial or time.monotonic() - last_scan < SCAN_EVERY:
+        return serial
+    last_scan = time.monotonic()
+    return try_ports(ip, scan_ports(ip))
 
 
 def try_ports(ip, ports):
