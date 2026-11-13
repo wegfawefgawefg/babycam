@@ -41,12 +41,25 @@ def server_up(ip):
 
 
 def mdns_ports(ip):
-    """Wireless debugging announces its port over mDNS; asking costs nothing."""
+    """Wireless debugging announces its port over mDNS; asking costs nothing. avahi first:
+    adb's own mDNS list sometimes comes back empty while avahi sees the phone."""
+    ports = []
+    try:
+        r = subprocess.run(['avahi-browse', '-rpt', '_adb-tls-connect._tcp'], capture_output=True, timeout=10)
+        for line in r.stdout.decode(errors='replace').splitlines():
+            f = line.split(';')
+            if len(f) > 8 and f[0] == '=' and f[7] == ip and f[8] not in ports:
+                ports.append(f[8])
+    except (OSError, subprocess.TimeoutExpired):
+        pass
     try:
         r = subprocess.run([ADB, 'mdns', 'services'], capture_output=True, timeout=10)
+        for port in re.findall(r'_adb-tls-connect\._tcp\s+' + re.escape(ip) + r':(\d+)', r.stdout.decode()):
+            if port not in ports:
+                ports.append(port)
     except subprocess.TimeoutExpired:
-        return []
-    return re.findall(r'_adb-tls-connect\._tcp\s+' + re.escape(ip) + r':(\d+)', r.stdout.decode())
+        pass
+    return ports
 
 
 def scan_ports(ip):
